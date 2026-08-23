@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fenceline"
+version = "1.0.0"
+description = "Post-hoc boundary auditor for coding agents - replays session logs against your agent's hard rules"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[project.scripts]
+fenceline = "fenceline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fenceline*"]
