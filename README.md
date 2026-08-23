@@ -10,7 +10,8 @@ against policy, with evidence.
 
 Runtime guardrails (hooks) prevent; fenceline **verifies**. It needs no
 integration, no SDK, no daemon: it reads opencode's sqlite store read-only
-(alongside a live agent) or any JSONL session log, offline, stdlib-only.
+(alongside a live agent), OpenAI Codex CLI rollouts, Claude Code
+transcripts, or any JSONL session log — offline, stdlib-only.
 
 ## What it checks
 
@@ -69,8 +70,9 @@ $ python3 -m fenceline --json ~/logs/session.jsonl | jq '.violations[].rule'
 Options:
 
 ```
-sources…                 sqlite db, Claude Code transcript, or JSONL logs
-                         (default: opencode store); directories swept for .jsonl
+sources…                 sqlite db, Claude Code transcript, OpenAI Codex
+                         rollout, or JSONL logs (default: opencode store);
+                         directories swept for .jsonl
 --root R                 allowed path root, repeatable (default: $HOME)
 --allow-head CMD         relent one forbidden head (e.g. --allow-head docker)
 --remote-host HOST       watch a restricted remote host alias
@@ -113,6 +115,23 @@ become a finding — only actually calling the tool counts.
 fenceline ~/.claude/projects --statusline
 ```
 
+## OpenAI Codex CLI rollouts
+
+Codex CLI writes rollout files under
+`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (plus `archived_sessions/`).
+They are detected automatically by their `{type, payload}` line envelope and
+audited: `session_meta` supplies the session id, and every tool call inside a
+`response_item` becomes an event — `function_call`s and `local_shell_call`s
+carrying an executable command feed the forbidden-command, destructive-
+pattern, remote-host and listen-server rules; other calls' file/url arguments
+feed the outside-root containment rule. User/assistant prose and reasoning
+items are never events. Even a truncated (crash-cut) arguments blob on a
+shell call is still audited as raw text.
+
+```sh
+fenceline ~/.codex/sessions --statusline
+```
+
 ## Design notes
 
 - Read-only by construction: sqlite opened via `file:…?mode=ro`, safe next
@@ -130,9 +149,9 @@ fenceline ~/.claude/projects --statusline
 python3 -m unittest discover -s tests -t .
 ```
 
-43 tests cover readers (incl. a synthetic sqlite store), each detector's
-positive/negative paths, symlink escape, windowing, and the CLI exit-code
-contract.
+56 tests cover readers (incl. a synthetic sqlite store and Codex/Claude Code
+fixtures), each detector's positive/negative paths, symlink escape,
+windowing, and the CLI exit-code contract.
 
 See [PLAN.md](PLAN.md) for problem framing and architecture decisions.
 

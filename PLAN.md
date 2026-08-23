@@ -78,6 +78,15 @@ Rules (defaults tuned for autonomous-builder boxes):
   command rules, Edit/Write/Read file_path → outside-root rule); prose never
   scanned; directory args swept for .jsonl. Format verified against five
   independent 2026 sources. SHIPPED s35.
+- M4 — v1.2.0 OpenAI Codex CLI rollout reader: ~/.codex/sessions/**/*.jsonl
+  (+ archived_sessions/) detected by {type, payload} envelope sniff;
+  session_meta → session id; response_item function_call / local_shell_call /
+  custom_tool_call become events. Any call carrying an executable command is
+  audited as bash regardless of tool name; other calls fall back to
+  path/file_path/file/url target extraction; truncated arguments on a shell
+  call audited as raw text; custom_tool_call string inputs (apply_patch
+  bodies) conservatively skipped. Envelope verified against the openai/codex
+  source tree (s36 research, shared with introspect v1.2.0). SHIPPED s37.
 
 ## Gotchas / decisions
 
@@ -94,3 +103,8 @@ Rules (defaults tuned for autonomous-builder boxes):
 - Severity defaults: rules 1–4 error, listen-server warn. Exit 1 on ANY
   finding regardless of severity (operator can filter in CI by rule if
   needed later).
+- Codex mapping principle: "carries a command ⇒ audited as bash" — tool
+  names are unreliable across codex versions, but an executable `command`
+  argument always means shell execution. String-typed custom_tool_call
+  inputs (apply_patch diff text) are prose-like and skipped to avoid
+  string-level false positives (fenceline s31 heredoc precedent).

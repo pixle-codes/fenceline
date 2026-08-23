@@ -7,9 +7,11 @@ import unittest
 from fenceline.readers import (
     collect_events,
     looks_like_claude_code,
+    looks_like_codex,
     looks_like_sqlite,
     parse_ts,
     read_claude,
+    read_codex,
     read_db,
     read_events,
     read_jsonl,
@@ -227,6 +229,164 @@ class TestClaudeCode(unittest.TestCase):
         events, err = read_jsonl(generic)
         self.assertIsNone(err)
         self.assertEqual(events[0].target, "/w/x.py")
+
+
+class TestCodex(unittest.TestCase):
+    T0 = "2026-08-20T10:00:00.000Z"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "rollout-1.jsonl")
+        write_jsonl(self.path, [
+            {"timestamp": self.T0, "type": "session_meta",
+             "payload": {"id": "thr_abc", "cwd": "/home/x",
+                         "originator": "codex_cli_rs",
+                         "cli_version": "0.42.0"}},
+            {"timestamp": self.T0, "type": "turn_context",
+             "payload": {"cwd": "/home/x", "model": "gpt-5.2"}},
+            # user PROSE asking for a destructive command: never an event
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "message", "role": "user",
+                         "content": [{"type": "input_text",
+                                      "text": "please run rm -rf /"}]}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "shell",
+                         "arguments": "{\"command\":[\"sudo\",\"apt\","
+                                      "\"update\"]}",
+                         "call_id": "c1"}},
+            {"timestamp": self.T0, "type": "event_msg",
+             "payload": {"type": "token_count",
+                         "info": {"total_token_usage": {
+                             "input_tokens": 10}}}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "local_shell_call", "status": "completed",
+                         "action": {"type": "exec",
+                                    "command": ["bash", "-lc", "ls -la"]},
+                         "call_id": "c2"}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call_output", "call_id": "c1",
+                         "output": "ok"}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "view_image",
+                         "arguments": "{\"path\":\"/etc/hosts\"}",
+                         "call_id": "c3"}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "custom_tool_call", "name": "apply_patch",
+                         "input": "*** Begin Patch", "call_id": "c9"}},
+        ])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_detection(self):
+        self.assertTrue(looks_like_codex(self.path))
+        generic = os.path.join(self.tmp.name, "g.jsonl")
+        write_jsonl(generic, [{"ts": 1, "session": "a", "tool": "bash",
+                               "detail": "ls"}])
+        self.assertFalse(looks_like_codex(generic))
+        self.assertFalse(looks_like_codex(os.path.join(self.tmp.name, "no")))
+
+    def test_tool_calls_extracted_prose_ignored(self):
+        events, err = read_codex(self.path)
+        self.assertIsNone(err)
+        self.assertEqual(len(events), 3)
+        shell = [e for e in events if e.tool == "bash"][0]
+        self.assertEqual(shell.command, "sudo apt update")
+        self.assertEqual(shell.sid, "thr_abc")
+        lsc = [e for e in events if e.command == "bash -lc ls -la"]
+        self.assertEqual(len(lsc), 1)
+        img = [e for e in events if e.target == "/etc/hosts"][0]
+        self.assertEqual(img.tool, "view_image")
+        joined = " ".join(e.command for e in events)
+        self.assertNotIn("rm -rf /", joined)
+
+    def test_read_events_dispatch(self):
+        events, err = read_events(self.path)
+        self.assertIsNone(err)
+        self.assertEqual(len(events), 3)
+
+    def test_fallback_sid_without_meta(self):
+        p2 = os.path.join(self.tmp.name, "rollout-nometa.jsonl")
+        write_jsonl(p2, [
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "shell",
+                         "arguments": "{\"command\":[\"ls\"]}",
+                         "call_id": "c1"}},
+        ])
+        events, _ = read_codex(p2)
+        self.assertEqual(events[0].sid, "codex")
+
+    def test_legacy_session_id_key(self):
+        p2 = os.path.join(self.tmp.name, "rollout-legacy.jsonl")
+        write_jsonl(p2, [
+            {"timestamp": self.T0, "type": "session_meta",
+             "payload": {"session_id": "legacy-1"}},
+        ])
+        events, _ = read_codex(p2)
+        self.assertEqual(events, [])
+        p3 = os.path.join(self.tmp.name, "rollout-legacy2.jsonl")
+        write_jsonl(p3, [
+            {"timestamp": self.T0, "type": "session_meta",
+             "payload": {"session_id": "legacy-1"}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "shell",
+                         "arguments": "{\"command\":[\"ls\"]}",
+                         "call_id": "c1"}},
+        ])
+        events, _ = read_codex(p3)
+        self.assertEqual(events[0].sid, "legacy-1")
+
+    def test_truncated_arguments_still_audited(self):
+        p2 = os.path.join(self.tmp.name, "rollout-trunc.jsonl")
+        write_jsonl(p2, [
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "shell",
+                         "arguments": "{\"command\":[\"rm -rf /",  # truncated
+                         "call_id": "c1"}},
+        ])
+        events, err = read_codex(p2)
+        self.assertIsNone(err)
+        self.assertEqual(len(events), 1)
+        self.assertIn("rm -rf /", events[0].command)
+
+    def test_non_shell_command_args_audited_as_bash(self):
+        p2 = os.path.join(self.tmp.name, "rollout-exec.jsonl")
+        write_jsonl(p2, [
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "container.exec",
+                         "arguments": "{\"command\":[\"docker\",\"ps\"]}",
+                         "call_id": "c1"}},
+        ])
+        events, _ = read_codex(p2)
+        self.assertEqual(events[0].tool, "bash")
+        self.assertEqual(events[0].command, "docker ps")
+
+    def test_iso_timestamps_parsed(self):
+        from datetime import datetime, timezone
+
+        expect = datetime(2026, 8, 20, 10, 0,
+                          tzinfo=timezone.utc).timestamp()
+        events, _ = read_codex(self.path)
+        for e in events:
+            self.assertEqual(e.ts, expect)
+
+    def test_directory_sweep_nested_layout(self):
+        base = os.path.join(self.tmp.name, "sessions", "2026", "08", "20")
+        os.makedirs(base)
+        write_jsonl(os.path.join(base, "rollout-x.jsonl"), [
+            {"timestamp": self.T0, "type": "session_meta",
+             "payload": {"id": "thr_sweep"}},
+            {"timestamp": self.T0, "type": "response_item",
+             "payload": {"type": "function_call", "name": "shell",
+                         "arguments": "{\"command\":[\"sudo\",\"ls\"]}",
+                         "call_id": "c1"}},
+        ])
+        events, errs = collect_events(
+            [os.path.join(self.tmp.name, "sessions")]
+        )
+        self.assertEqual(errs, [])
+        self.assertEqual([e.command for e in events], ["sudo ls"])
+        self.assertEqual(events[0].sid, "thr_sweep")
 
 
 if __name__ == "__main__":

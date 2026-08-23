@@ -1,6 +1,7 @@
-"""Session-log readers: opencode sqlite store + generic JSONL.
+"""Session-log readers: opencode sqlite store, Claude Code transcripts,
+OpenAI Codex CLI rollouts, and generic JSONL.
 
-Both yield Event records for TOOL CALLS ONLY. Assistant prose is never an
+All yield Event records for TOOL CALLS ONLY. Assistant prose is never an
 event, so discussing a forbidden command can never become a finding.
 """
 
@@ -55,6 +56,8 @@ def read_events(path: str) -> tuple[list[Event], str | None]:
         return read_db(path)
     if looks_like_claude_code(path):
         return read_claude(path)
+    if looks_like_codex(path):
+        return read_codex(path)
     return read_jsonl(path)
 
 
@@ -141,6 +144,149 @@ def _mk_event(ts: float, sid: str, tool: str, inp: dict) -> Event | None:
         if not target and not command:
             return None
     return Event(ts=ts, sid=sid, tool=tool, target=target, command=command)
+
+
+_CODEX_LINE_TYPES = (
+    "session_meta",
+    "response_item",
+    "inter_agent_communication",
+    "inter_agent_communication_metadata",
+    "compacted",
+    "turn_context",
+    "world_state",
+    "security_risk_score",
+    "event_msg",
+)
+
+_SHELL_TOOLS = ("shell", "local_shell")
+
+
+def looks_like_codex(path: str) -> bool:
+    """Codex CLI rollouts (~/.codex/sessions/**/*.jsonl): lines carry a
+    type discriminator + payload envelope."""
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    with fh:
+        for n, line in enumerate(fh):
+            line = line.strip()
+            if not line:
+                continue
+            if n > 10:
+                break
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(d, dict)
+                and d.get("type") in _CODEX_LINE_TYPES
+                and isinstance(d.get("payload"), dict)
+            ):
+                return True
+    return False
+
+
+def _codex_args(arguments) -> dict | None:
+    """Parse a function_call arguments JSON string -> dict, else None."""
+    if not isinstance(arguments, str) or not arguments.strip():
+        return None
+    try:
+        v = json.loads(arguments)
+    except json.JSONDecodeError:
+        return None
+    return v if isinstance(v, dict) else None
+
+
+def _codex_command(argsd: dict) -> str:
+    cmd = argsd.get("command")
+    if isinstance(cmd, list) and cmd:
+        return " ".join(str(c) for c in cmd)
+    if isinstance(cmd, str):
+        return cmd
+    return ""
+
+
+def read_codex(path: str) -> tuple[list[Event], str | None]:
+    """OpenAI Codex CLI rollout JSONL (envelope verified against the codex
+    source tree, 2026-08): {"timestamp", "type", "payload"} per line.
+
+    session_meta supplies the session id; response_item payloads of type
+    function_call / local_shell_call / custom_tool_call are tool calls.
+    Any call carrying an executable command is audited as bash; other calls
+    fall back to target extraction (path/file_path/file/url). Prose,
+    reasoning, turn_context and event_msg lines are never events.
+    """
+    out: list[Event] = []
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [], f"cannot open {path}: {exc}"
+    with fh:
+        sid = "codex"
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            typ = d.get("type")
+            p = d.get("payload")
+            if typ == "session_meta" and isinstance(p, dict):
+                sid = str(p.get("id") or p.get("session_id") or "codex")
+                continue
+            if typ != "response_item" or not isinstance(p, dict):
+                continue
+            kind = p.get("type")
+            ts = parse_ts(d.get("timestamp"))
+            if ts is None:
+                ts = parse_ts(p.get("timestamp"))
+            ts = ts or 0.0
+
+            if kind == "function_call":
+                name = str(p.get("name") or "").lower()
+                argsd = _codex_args(p.get("arguments"))
+                if argsd is not None:
+                    cmd = _codex_command(argsd)
+                    ev = (
+                        _mk_event(ts, sid, "bash", {"command": cmd})
+                        if cmd.strip()
+                        else _mk_event(ts, sid, name, argsd)
+                    )
+                elif name in _SHELL_TOOLS:
+                    # truncated/unparseable envelope: audit the raw text
+                    raw = p.get("arguments")
+                    ev = _mk_event(
+                        ts, sid, "bash",
+                        {"command": raw if isinstance(raw, str) else ""},
+                    )
+                else:
+                    ev = None
+            elif kind == "local_shell_call":
+                action = p.get("action") or {}
+                cmd = action.get("command") if isinstance(action, dict) else None
+                detail = ""
+                if isinstance(cmd, list):
+                    detail = " ".join(str(c) for c in cmd)
+                elif isinstance(cmd, str):
+                    detail = cmd
+                ev = _mk_event(ts, sid, "bash", {"command": detail})
+            elif kind == "custom_tool_call":
+                name = str(p.get("name") or "").lower()
+                inp = p.get("input")
+                # string inputs (apply_patch bodies) are prose-like diff
+                # text, not structured targets — conservative skip.
+                ev = _mk_event(ts, sid, name, inp) if isinstance(inp, dict) else None
+            else:
+                ev = None
+            if ev is not None:
+                out.append(ev)
+    return out, None
 
 
 def read_jsonl(path: str) -> tuple[list[Event], str | None]:
