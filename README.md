@@ -69,7 +69,8 @@ $ python3 -m fenceline --json ~/logs/session.jsonl | jq '.violations[].rule'
 Options:
 
 ```
-sources…                 sqlite db or JSONL logs (default: opencode store)
+sources…                 sqlite db, Claude Code transcript, or JSONL logs
+                         (default: opencode store); directories swept for .jsonl
 --root R                 allowed path root, repeatable (default: $HOME)
 --allow-head CMD         relent one forbidden head (e.g. --allow-head docker)
 --remote-host HOST       watch a restricted remote host alias
@@ -97,6 +98,20 @@ Any log of tool calls works:
 
 Timestamps accept ms/s epochs or ISO strings; keys `time`/`timestamp`,
 `session_id`, `command` are aliased. Non-tool lines are ignored.
+
+## Claude Code transcripts
+
+Files under `~/.claude/projects/<project>/<session>.jsonl` (Claude Code's
+native transcript format) are detected automatically and audited: every
+assistant `tool_use` block becomes an event — `Bash` commands feed the
+forbidden-command and destructive-pattern rules, `Edit`/`Write`/`Read`/
+`NotebookEdit` file paths feed the outside-root containment rule. Assistant
+prose is never an event, so discussing a dangerous command in text can never
+become a finding — only actually calling the tool counts.
+
+```sh
+fenceline ~/.claude/projects --statusline
+```
 
 ## Design notes
 

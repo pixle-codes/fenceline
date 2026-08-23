@@ -53,7 +53,73 @@ def read_events(path: str) -> tuple[list[Event], str | None]:
     """Read one source; returns (events, error). Autodetects format."""
     if looks_like_sqlite(path):
         return read_db(path)
+    if looks_like_claude_code(path):
+        return read_claude(path)
     return read_jsonl(path)
+
+
+def looks_like_claude_code(path: str) -> bool:
+    """Claude Code transcripts: ~/.claude/projects/**/*.jsonl lines carry
+    sessionId + a type discriminator (user/assistant/summary/...)."""
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    with fh:
+        for n, line in enumerate(fh):
+            line = line.strip()
+            if not line:
+                continue
+            if n > 10:
+                break
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(d, dict)
+                and isinstance(d.get("sessionId"), str)
+                and (d.get("type") in ("user", "assistant", "summary")
+                     or isinstance(d.get("message"), dict))
+            ):
+                return True
+    return False
+
+
+def read_claude(path: str) -> tuple[list[Event], str | None]:
+    """Claude Code JSONL: assistant message.content[] tool_use blocks are the
+    tool calls; prose/thinking blocks are ignored by construction."""
+    out: list[Event] = []
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [], f"cannot open {path}: {exc}"
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict) or d.get("type") != "assistant":
+                continue
+            ts = parse_ts(d.get("timestamp")) or 0.0
+            sid = d.get("sessionId") or "claude"
+            msg = d.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                    continue
+                tool = str(b.get("name") or "").lower()
+                inp = b.get("input")
+                ev = _mk_event(ts, str(sid), tool, inp if isinstance(inp, dict) else {})
+                if ev is not None:
+                    out.append(ev)
+    return out, None
 
 
 def _mk_event(ts: float, sid: str, tool: str, inp: dict) -> Event | None:
@@ -66,7 +132,7 @@ def _mk_event(ts: float, sid: str, tool: str, inp: dict) -> Event | None:
         if not command.strip():
             return None
     else:
-        for key in ("filePath", "path", "file"):
+        for key in ("filePath", "file_path", "notebook_path", "path", "file"):
             if inp.get(key):
                 target = str(inp[key])
                 break
@@ -178,9 +244,20 @@ def resolve_sources(paths: list[str]) -> tuple[list[str], str]:
 
 def collect_events(paths: list[str]) -> tuple[list[Event], list[str]]:
     """Read all sources; sort by ts; return (events, errors)."""
+    import os
+
     events: list[Event] = []
     errors: list[str] = []
+    expanded: list[str] = []
     for p in paths:
+        if os.path.isdir(p):
+            for root, _dirs, files in os.walk(p):
+                expanded.extend(
+                    os.path.join(root, f) for f in sorted(files) if f.endswith(".jsonl")
+                )
+        else:
+            expanded.append(p)
+    for p in expanded:
         evs, err = read_events(p)
         if err:
             errors.append(err)

@@ -73,6 +73,11 @@ Rules (defaults tuned for autonomous-builder boxes):
   escape fixture. SHIPPED s31.
 - M2 — publish: README with real live-db smoke output, LICENSE, GitHub
   public repo tagged v1.0.0, topic `agent-tools`. SHIPPED s31.
+- M3 — v1.1.0 Claude Code reader: ~/.claude/projects/**/*.jsonl detected by
+  sessionId+type envelope; assistant tool_use blocks become events (Bash →
+  command rules, Edit/Write/Read file_path → outside-root rule); prose never
+  scanned; directory args swept for .jsonl. Format verified against five
+  independent 2026 sources. SHIPPED s35.
 
 ## Gotchas / decisions
 
