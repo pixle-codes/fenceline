@@ -78,8 +78,18 @@ sources…                 sqlite db, Claude Code transcript, OpenAI Codex
 --remote-host HOST       watch a restricted remote host alias
 --remote-allow TOKEN     token that must co-occur to make access legal
 --since TS --until TS    epoch or ISO window
+--since-days N           audit only the last N days (exclusive with --since)
+--kind RULE              report only this rule, repeatable (forbidden-command,
+                         destructive-pattern, outside-root, remote-host,
+                         listen-server); unknown name = usage error
+--allow-path PREFIX      exempt file targets under this path prefix,
+                         repeatable; exempted findings leave the exit code
+                         but are always counted in the summary — never
+                         silently dropped. Never applies to bash commands:
+                         you can exempt where files live, never what runs.
 --json                   machine-readable findings
---statusline             "events:N violations:E+Ww" one-liner
+--statusline             "events:N violations:E+Ww" one-liner (+" exempt:K"
+                         when --allow-path exemptions exist)
 ```
 
 Exit codes: `0` clean · `1` violations found · `2` usage/unreadable source.
@@ -87,6 +97,23 @@ Cron it nightly; wire the exit code into CI or a health check:
 
 ```sh
 fenceline --statusline || notify-send "agent crossed a boundary"
+```
+
+A full-history audit accumulates known-benign findings forever (the harness
+reading its own config, scratch files in /tmp), which trains you to ignore
+the alarm. Scope instead of ignoring:
+
+```sh
+# nightly gate: only recent behavior pages anyone
+fenceline --since-days 1 --statusline || notify-send "agent crossed a boundary"
+
+# CI gate on the dangerous classes only
+fenceline --kind forbidden-command --kind destructive-pattern \
+          --kind remote-host --json
+
+# interactive audit that stays honest about what it silenced
+fenceline --allow-path /opt/oxagent --allow-path /tmp/opencode
+# total: 1 violation(s), 0 warning(s) (3 exempt via --allow-path)
 ```
 
 ## JSONL input format

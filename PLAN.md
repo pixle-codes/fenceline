@@ -87,6 +87,16 @@ Rules (defaults tuned for autonomous-builder boxes):
   call audited as raw text; custom_tool_call string inputs (apply_patch
   bodies) conservatively skipped. Envelope verified against the openai/codex
   source tree (s36 research, shared with introspect v1.2.0). SHIPPED s37.
+- M5 — v1.3.0 finding scope controls: --kind RULE (repeatable, roster-
+  validated pre-scan, unknown = exit 2) narrows findings to selected rules;
+  --allow-path PREFIX (repeatable) exempts file-target findings under a path
+  prefix — exempted findings leave exit gating but stay counted in human
+  summary / JSON "exempted" (LAST key, only when >0) / statusline " exempt:K"
+  suffix, and NEVER apply to bash-command evidence (exempt where files live,
+  never what runs); --since-days N relative window sugar over the existing
+  epoch/ISO --since (mutually exclusive; N <= 0 = exit 2). Motivated LIVE at
+  s114: the s31 nightly recipe (`fenceline || alert`) was a permanent wolf —
+  benign environment reads gated exit forever. SHIPPED s114.
 
 ## Gotchas / decisions
 
