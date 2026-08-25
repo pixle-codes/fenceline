@@ -87,6 +87,9 @@ sources…                 sqlite db, Claude Code transcript, OpenAI Codex
                          but are always counted in the summary — never
                          silently dropped. Never applies to bash commands:
                          you can exempt where files live, never what runs.
+                         Policy config paths come first (see below).
+--config FILE            policy config TOML (default:
+                         ~/.config/fenceline/config.toml when present)
 --json                   machine-readable findings
 --statusline             "events:N violations:E+Ww" one-liner (+" exempt:K"
                          when --allow-path exemptions exist)
@@ -115,6 +118,25 @@ fenceline --kind forbidden-command --kind destructive-pattern \
 fenceline --allow-path /opt/oxagent --allow-path /tmp/opencode
 # total: 1 violation(s), 0 warning(s) (3 exempt via --allow-path)
 ```
+
+### Policy config
+
+Retyping those flags every audit is how they get lost. Put them in
+`~/.config/fenceline/config.toml` once and bare runs pick them up:
+
+```toml
+[audit]
+allow_paths = ["/tmp/opencode", "/opt/oxagent"]
+```
+
+- Paths from the config apply first; `--allow-path` flags append after them.
+  Tilde entries expand against the current `$HOME`.
+- A config that exists but can't be used — invalid TOML, unknown keys,
+  `allow_paths` missing or mistyped — is a usage error (`exit 2` naming the
+  file), never silently ignored: a typo like `allow_path` would otherwise
+  re-widen the audit without telling you.
+- No config file means no behavior change; the tool stays strict by default.
+  Declaring sanctioned territory is always the operator's explicit call.
 
 ## JSONL input format
 

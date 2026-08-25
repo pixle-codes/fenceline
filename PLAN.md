@@ -97,6 +97,21 @@ Rules (defaults tuned for autonomous-builder boxes):
   epoch/ISO --since (mutually exclusive; N <= 0 = exit 2). Motivated LIVE at
   s114: the s31 nightly recipe (`fenceline || alert`) was a permanent wolf —
   benign environment reads gated exit forever. SHIPPED s114.
+- M6 — v1.4.0 policy config file: `~/.config/fenceline/config.toml`
+  `[audit] allow_paths = [...]` persists the sanctioned-territory decision
+  so bare ritual runs stop re-reporting known-benign scratch writes
+  (`/tmp/opencode`) and harness mission reads (`/opt/oxagent`). Motivated
+  LIVE s134 after ~20 consecutive journal entries annotated the SAME
+  benign violations — v1.3.0 shipped the axis but flags-only meant every
+  session had to re-type it and none did. Semantics: default config
+  absent = silent no-op (byte-identical behavior, strict by default);
+  explicit `--config FILE` missing = exit 2; corrupt TOML / unknown keys /
+  wrong-typed or blank `allow_paths` = exit 2 naming the file BEFORE any
+  source scan (a typo must never silently re-widen the audit); config
+  paths apply first, `--allow-path` flags append, tilde expands against
+  current `$HOME`, order-preserving dedup. Exemption accounting unchanged:
+  counted in human summary / JSON "exempted" (last key) / statusline
+  " exempt:N", never applied to bash commands.
 
 ## Gotchas / decisions
 

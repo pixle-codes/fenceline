@@ -7,7 +7,9 @@ import json
 import os
 import sys
 import time
+import tomllib
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .model import VERSION
 from .readers import collect_events, parse_ts, resolve_sources
@@ -16,6 +18,52 @@ from .rules import audit, default_policy
 EXIT_CLEAN = 0
 EXIT_VIOLATIONS = 1
 EXIT_USAGE = 2
+
+
+class ConfigError(Exception):
+    """Policy config unreadable or invalid; message names the file."""
+
+
+def _default_config_path() -> str:
+    return str(Path.home() / ".config" / "fenceline" / "config.toml")
+
+
+def load_config(path: str | None = None) -> list[str]:
+    """Return allow_paths from a policy TOML.
+
+    Default path absent = silent no-op ([]); an explicit --config that is
+    missing, unreadable, or invalid raises ConfigError. Validation rejects
+    unknown keys so a typo can never silently narrow the audit.
+    """
+    target = Path(path).expanduser() if path else Path(_default_config_path())
+    if not target.is_file():
+        if path:
+            raise ConfigError(f"config not found: {target}")
+        return []
+    try:
+        raw = tomllib.loads(target.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise ConfigError(f"cannot read {target}: {e}") from e
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{target}: not valid TOML: {e}") from e
+    unknown = sorted(set(raw) - {"audit"})
+    if unknown:
+        raise ConfigError(
+            f"{target}: unknown key(s) {', '.join(unknown)} (valid: audit)")
+    tbl = raw.get("audit", {})
+    if not isinstance(tbl, dict):
+        raise ConfigError(f"{target}: [audit] must be a table")
+    unknown_tbl = sorted(set(tbl) - {"allow_paths"})
+    if unknown_tbl:
+        raise ConfigError(f"{target}: unknown [audit] key(s) "
+                          f"{', '.join(unknown_tbl)} (valid: allow_paths)")
+    paths = tbl.get("allow_paths", [])
+    if not isinstance(paths, list) or not all(isinstance(p, str)
+                                              for p in paths):
+        raise ConfigError(f"{target}: allow_paths must be a list of strings")
+    if any(not p.strip() for p in paths):
+        raise ConfigError(f"{target}: allow_paths entries must be non-empty")
+    return paths
 
 RULE_ROSTER = (
     "forbidden-command",
@@ -48,7 +96,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--allow-path", action="append", default=[],
                     dest="allow_paths", metavar="PREFIX",
                     help="exempt file targets under this path prefix "
-                         "(repeatable); never applies to bash commands")
+                         "(repeatable); never applies to bash commands; "
+                         "paths from the policy config come first")
+    ap.add_argument("--config", default=None, metavar="FILE",
+                    help="policy config TOML (default: "
+                         "~/.config/fenceline/config.toml when present)")
     ap.add_argument("--since-days", type=float, default=None, metavar="N",
                     help="audit only events from the last N days")
     ap.add_argument("--since", default="", help="epoch or ISO timestamp filter")
@@ -95,6 +147,11 @@ def run(argv: list[str]) -> int:
                   "of days", file=sys.stderr)
             return EXIT_USAGE
         args.since = ""   # window composed below from the relative cutoff
+    try:
+        cfg_allow = load_config(args.config)
+    except ConfigError as e:
+        print(f"fenceline: {e}", file=sys.stderr)
+        return EXIT_USAGE
     paths, err = resolve_sources(args.sources)
     if err:
         print(f"fenceline: {err}", file=sys.stderr)
@@ -114,8 +171,13 @@ def run(argv: list[str]) -> int:
         lo = time.time() - args.since_days * 86400
     events = [e for e in events if (e.ts == 0.0 or lo <= e.ts <= hi)]
     findings = audit(events, pol)
-    prefixes = [os.path.normpath(os.path.expanduser(p))
-                for p in args.allow_paths]
+    prefixes = []
+    for p in cfg_allow + args.allow_paths:
+        if not p.strip():
+            continue
+        np_ = os.path.normpath(os.path.expanduser(p))
+        if np_ not in prefixes:
+            prefixes.append(np_)
     kept = []
     exempted = 0
     for f in findings:
