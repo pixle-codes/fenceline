@@ -6,14 +6,20 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from fenceline import cli
 
 
 def run_cli(argv, root=None):
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = cli.run((["--root", root] if root else []) + argv)
+    # Hermetic against the real machine's policy config: bare runs resolve
+    # ~/.config/fenceline/config.toml, which exists here since v1.4.0.
+    with tempfile.TemporaryDirectory() as scratch:
+        with mock.patch.dict(os.environ, {"HOME": scratch}):
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                code = cli.run((["--root", root] if root else []) + argv)
     return code, out.getvalue(), err.getvalue()
 
 
